@@ -1,26 +1,29 @@
-# 🛠️ The Production Readiness Exercise: `deploy-notifier-api`
+# 🛠️ Production Readiness Exercise: `deploy-notifier-api`
 
-You have inherited a "hackathon toy": a service that receives deployment events from CI/CD runners and forwards notifications to PagerDuty and an audit store.
-It passed its initial demo, but it is an operational landmine.
+## The Handover
 
-Your mission: upgrade this service to meet the **5-Point Production Readiness Scorecard** in 50 minutes.
+The engineer who built this service left last Friday. It was a hackathon project that "just worked" in the demo, so it went live.
+
+`deploy-notifier-api` receives deployment events from CI/CD runners and forwards them to PagerDuty and an audit store. As of this morning it's **yours**.
+
+During last night's production release window, CI pipelines started hanging, on-call couldn't figure out which request caused what, and a downstream team swears they "sent the right payload."
+
+You have **50 minutes** to make this service something you'd be willing to be paged for.
 
 ---
 
 ## 🚀 Getting Started
 
 ```bash
-# Option A: local
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 uvicorn app.main:app --reload        # Swagger UI at http://localhost:8000/docs
-pytest                                # 2 tests fail. That's your starting point.
-
-# Option B: container
-docker compose up --build
+pytest
 ```
 
-Try it:
+or `docker compose up --build`.
+
+Poke at it:
 
 ```bash
 curl -X POST localhost:8000/api/v1/deployments \
@@ -28,41 +31,32 @@ curl -X POST localhost:8000/api/v1/deployments \
   -d '{"service":"auth-service","environment":"production","commit_sha":"a1b2c3d","author":"dev@company.com"}'
 ```
 
-(Run it a few times against `production` and watch what happens.)
+Try different payloads and environments. Send it things a careless caller might send. Run it more than once.
+
+> `app/downstream.py` simulates a third-party API you don't own. Don't fix the problem by editing it.
 
 ---
 
 ## 🎯 The 5-Point Scorecard
 
-- [ ] **1. Strict API Contract**: Enforce payload validation with Pydantic schemas. Invalid payloads must return HTTP 422 with descriptive error messages.
-- [ ] **2. ADR (Architectural Decision Record)**: Add `docs/adr/0002-async-notifications-vs-sync.md` explaining why synchronous webhook dispatching is a risk and how you mitigated it.
-- [ ] **3. Feature Flag / Kill-Switch**: Wrap the flaky PagerDuty integration in an environment-driven kill-switch (`FEATURE_PAGERDUTY_DISPATCH=true/false`). If disabled or failing, degrade gracefully (return 202 Accepted).
-- [ ] **4. Structured JSON Logging**: Replace all `print()` calls with structured JSON logs containing timestamp, level, message, and context fields (`service`, `environment`).
-- [ ] **5. Correlation ID & Trace Propagation**: Middleware must extract incoming `x-trace-id` (or generate one if missing), attach it to the request state, include it in every log entry, and return it in the response header.
+Each item describes *what done looks like*, not how to get there. The specifics in `code` are the contract your facilitator will check against.
 
-**Bonus (Versioning):** `APP_VERSION` is hardcoded. Propose how Conventional Commits (`feat!:`) + a semantic-release check would stop a breaking field change from shipping silently.
+- [ ] **1. Strict API Contract**: Malformed or incomplete deployment events are rejected at the boundary with `422` and an error a caller can act on. The contract is discoverable without reading the source.
+- [ ] **2. Institutional Memory**: A new ADR in `docs/adr/` records one significant decision you made today: the context, the options you rejected, and the trade-offs you accepted. Use the template in `0001`.
+- [ ] **3. Kill-Switch**: The PagerDuty integration can be turned off without a redeploy via `FEATURE_PAGERDUTY_DISPATCH`. Whether it's off or PagerDuty is misbehaving, callers still get a timely `202 Accepted` and the event is not silently lost.
+- [ ] **4. Structured Logging**: Every log line is machine-parseable and carries enough context to answer "which service, which environment, what happened?"
+- [ ] **5. Trace Propagation**: A caller-supplied `x-trace-id` (or a generated one, if absent) appears in the response headers and on every log line emitted while handling that request.
+
+**Stretch: Versioning.** Look at how this service is versioned. What stops someone from shipping a breaking change to the payload without callers finding out first? Propose (or implement) a fix.
 
 ---
 
-## ⏱️ Step-by-Step Sprints (50 mins)
+## ⏱️ Suggested Timebox
 
-### Sprint 1: Lock the Contract & Document the Why (15 min)
-1. Replace `request.json()` with a strict Pydantic model (`DeploymentEventRequest`).
-2. Require: `service` (str), `environment` (enum: `dev`, `staging`, `production`), `commit_sha` (hex, 7–40 chars), `author` (email).
-3. Verify that `pytest tests/test_api.py::test_missing_required_fields_fails_silently` now passes.
-4. Start your ADR in `docs/adr/` using the template in `0001-record-architecture-decisions.md`.
+| Sprint | Time | Scorecard items |
+|---|---|---|
+| 1. Lock the contract & write down the why | 15 min | 1, 2 |
+| 2. Shield the downstream | 15 min | 3 |
+| 3. Turn on the lights | 20 min | 4, 5 |
 
-### Sprint 2: Shield Downstream & Add the Kill-Switch (15 min)
-1. In `app/downstream.py`, PagerDuty hangs for 3s and randomly throws 504s for `production` deploys.
-2. Add an environment-driven flag: `FEATURE_PAGERDUTY_DISPATCH` (default `false`).
-3. If the flag is off **or** the call fails, skip/swallow it, write the audit record, log a bypass, and return `202 Accepted` with `{"status": "queued_locally"}` instead of hanging or 500-ing.
-4. Finish your ADR: why sync, what you rejected (retry loops? a queue?), and the consequences.
-
-### Sprint 3: Turn on the Lights (20 min)
-1. Add a FastAPI middleware that reads `x-trace-id`; if missing, generate a UUID.
-2. Return `x-trace-id` in the response headers.
-3. Replace every `print()` with a structured JSON logger (`structlog` or a stdlib `logging` JSON formatter).
-4. Ensure every log line emitted during a request automatically includes `trace_id`.
-5. Verify `pytest tests/test_api.py::test_trace_id_propagated_in_response` passes.
-
-**Done when:** `pytest` is fully green, `FEATURE_PAGERDUTY_DISPATCH=false` returns 202 for production deploys, and a single request produces a clean, correlated JSON log stream.
+**You're done when** `pytest` is green, the scorecard items hold up when your facilitator pokes at your running service, and you've added tests that prove items 3–5 too.
